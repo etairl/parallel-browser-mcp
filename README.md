@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/etairl-parallel-browser-mcp-badge.png)](https://mseep.ai/app/etairl-parallel-browser-mcp)
+
 # parallel-browser-mcp
 
 `parallel-browser-mcp` is an MCP server for parallel browser automation. It exposes a numeric session model over MCP so one client can create and control multiple browser sessions at the same time across multiple browser providers.
