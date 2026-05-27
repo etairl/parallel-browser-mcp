@@ -37,7 +37,17 @@ export const fillFormSchema = sessionIdSchema.extend({
 });
 
 export const screenshotSchema = sessionIdSchema.extend({
-  fullPage: z.boolean().optional(),
+  fullPage: z.boolean().optional().describe('Capture full scrollable page, not just the viewport.'),
+});
+
+export const snapshotSchema = sessionIdSchema.extend({
+  maxDepth: z.number().int().positive().optional().describe('Max tree depth (default 4).'),
+  maxChildren: z.number().int().positive().optional().describe('Max children per node (default 20).'),
+  selector: z.string().min(1).optional().describe('Scope to an element; omit for document body.'),
+});
+
+export const domQuerySchema = sessionIdSchema.extend({
+  selector: z.string().min(1),
 });
 
 export const dragSchema = sessionIdSchema.extend({
@@ -48,7 +58,7 @@ export const dragSchema = sessionIdSchema.extend({
 
 export const selectOptionSchema = sessionIdSchema.extend({
   selector: z.string().min(1),
-  values: z.array(z.string().min(1)).min(1),
+  values: z.array(z.string().min(1)).min(1).describe('Option values to select; pass multiple for multi-select.'),
   timeout: z.number().int().positive().optional(),
 });
 
@@ -58,16 +68,16 @@ export const generateLocatorSchema = sessionIdSchema.extend({
 
 export const evaluateSchema = sessionIdSchema.extend({
   script: z.string().min(1),
-  selector: z.string().min(1).optional(),
+  selector: z.string().min(1).optional().describe('Matched element passed as first arg to script.'),
 });
 
 export const keyboardPressSchema = sessionIdSchema.extend({
-  key: z.string().min(1),
+  key: z.string().min(1).describe('Playwright key name, e.g. "Enter", "ArrowDown", "Control+A".'),
 });
 
 export const keyboardTypeSchema = sessionIdSchema.extend({
   text: z.string(),
-  delay: z.number().int().nonnegative().optional(),
+  delay: z.number().int().nonnegative().optional().describe('Ms between keystrokes. Omit for instant.'),
 });
 
 export const mousePointSchema = sessionIdSchema.extend({

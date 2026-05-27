@@ -1,6 +1,31 @@
 import type { Page } from 'playwright-core';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { extractPageSnapshot, formatPageStructure, generateLocatorCandidates } from './dom.js';
+
+// Minimal fake DOM element — only the properties buildNode actually touches.
+const fakeEl = (
+  tag: string,
+  attrs: Record<string, string> = {},
+  children: object[] = [],
+  text = '',
+) => ({
+  tagName: tag.toUpperCase(),
+  innerText: text,
+  textContent: text,
+  attributes: Object.entries(attrs).map(([name, value]) => ({ name, value })),
+  children,
+});
+
+// Stubs page.evaluate to call the passed function directly in Node.js and
+// sets up global.document so the callback's document references resolve.
+const stubPage = (doc: object) => {
+  vi.stubGlobal('document', doc);
+  return {
+    evaluate: vi.fn(async (fn: (args: unknown) => unknown, args: unknown) => fn(args)),
+    title: vi.fn(async () => 'Test'),
+    url: vi.fn(() => 'https://test.com'),
+  } as unknown as Page;
+};
 
 describe('dom utils', () => {
   it('formats a readable page structure', () => {
@@ -11,11 +36,11 @@ describe('dom utils', () => {
         {
           tag: 'button',
           text: 'Submit',
-          role: 'button',
-          name: 'submit',
+          attributes: { role: 'button', name: 'submit' },
           children: [],
         },
       ],
+      params: { maxDepth: 4, maxChildren: 20, selector: null },
     });
 
     expect(output).toContain('Title: Example');
@@ -25,26 +50,221 @@ describe('dom utils', () => {
 
   it('delegates snapshot extraction to page.evaluate', async () => {
     const page = {
-      evaluate: vi.fn(async () => ({
-        title: 'Snapshot',
-        url: 'https://example.com',
-        tree: [],
-      })),
+      evaluate: vi.fn(async () => []),
+      title: vi.fn(async () => 'Snapshot'),
+      url: vi.fn(() => 'https://example.com'),
     } as unknown as Page;
 
     const result = await extractPageSnapshot(page);
 
     expect(result.title).toBe('Snapshot');
+    expect(result.url).toBe('https://example.com');
+    expect(result.params).toEqual({ maxDepth: 4, maxChildren: 20, selector: null });
     expect(page.evaluate).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes options to page.evaluate and records them in params', async () => {
+    const page = {
+      evaluate: vi.fn(async () => []),
+      title: vi.fn(async () => 'Options Test'),
+      url: vi.fn(() => 'https://example.com'),
+    } as unknown as Page;
+
+    const result = await extractPageSnapshot(page, { maxDepth: 2, maxChildren: 5, selector: '#main' });
+
+    expect(result.params).toEqual({ maxDepth: 2, maxChildren: 5, selector: '#main' });
+    expect(page.evaluate).toHaveBeenCalledWith(expect.any(Function), {
+      maxDepth: 2,
+      maxChildren: 5,
+      selector: '#main',
+    });
+  });
+
+  it('renders hiddenAttrCount in formatted output', () => {
+    const output = formatPageStructure({
+      title: 'T',
+      url: 'https://example.com',
+      tree: [
+        {
+          tag: 'div',
+          text: '',
+          attributes: { id: 'main' },
+          hiddenAttrCount: 5,
+          children: [],
+        },
+      ],
+      params: { maxDepth: 4, maxChildren: 20, selector: null },
+    });
+
+    expect(output).toContain('[…5 more attrs]');
+  });
+
+  it('renders hiddenChildCount in formatted output', () => {
+    const output = formatPageStructure({
+      title: 'T',
+      url: 'https://example.com',
+      tree: [
+        {
+          tag: 'ul',
+          text: '',
+          attributes: {},
+          hiddenChildCount: 12,
+          children: [
+            { tag: 'li', text: 'first', attributes: {}, children: [] },
+          ],
+        },
+      ],
+      params: { maxDepth: 4, maxChildren: 20, selector: null },
+    });
+
+    expect(output).toContain('li');
+    expect(output).toContain('[…12 more children]');
+  });
+
+  describe('buildNode', () => {
+    afterEach(() => vi.unstubAllGlobals());
+
+    it('filters out SKIP_TAGS at every level', async () => {
+      const body = fakeEl('body', {}, [
+        fakeEl('div'),
+        fakeEl('script'),
+        fakeEl('style'),
+        fakeEl('noscript'),
+        fakeEl('p'),
+      ]);
+      const page = stubPage({ body, documentElement: body });
+
+      const result = await extractPageSnapshot(page);
+
+      const tags = result.tree.map((n) => n.tag);
+      expect(tags).toEqual(['div', 'p']);
+    });
+
+    it('caps top-level nodes at maxChildren', async () => {
+      const body = fakeEl('body', {}, Array.from({ length: 25 }, () => fakeEl('div')));
+      const page = stubPage({ body, documentElement: body });
+
+      const result = await extractPageSnapshot(page, { maxChildren: 5 });
+
+      expect(result.tree).toHaveLength(5);
+    });
+
+    it('stops recursing at maxDepth and sets hiddenChildCount', async () => {
+      const inner = fakeEl('span', {}, [], 'deep');
+      const middle = fakeEl('p', {}, [inner]);
+      const outer = fakeEl('div', {}, [middle]);
+      const body = fakeEl('body', {}, [outer]);
+      const page = stubPage({ body, documentElement: body });
+
+      // depth 0 = outer(div), depth 1 = middle(p) which hits the limit
+      const result = await extractPageSnapshot(page, { maxDepth: 1 });
+
+      const p = result.tree[0].children[0];
+      expect(p.tag).toBe('p');
+      expect(p.children).toHaveLength(0);
+      expect(p.hiddenChildCount).toBe(1);
+    });
+
+    it('caps visible children per node at maxChildren and sets hiddenChildCount', async () => {
+      const body = fakeEl('body', {}, [
+        fakeEl('ul', {}, Array.from({ length: 10 }, () => fakeEl('li'))),
+      ]);
+      const page = stubPage({ body, documentElement: body });
+
+      const result = await extractPageSnapshot(page, { maxChildren: 3 });
+
+      const ul = result.tree[0];
+      expect(ul.children).toHaveLength(3);
+      expect(ul.hiddenChildCount).toBe(7);
+    });
+
+    it('sets hiddenAttrCount when attributes exceed the 8-attr cap', async () => {
+      const attrs = Object.fromEntries(
+        Array.from({ length: 12 }, (_, i) => [`data-x${i}`, `v${i}`]),
+      );
+      const body = fakeEl('body', {}, [fakeEl('div', attrs)]);
+      const page = stubPage({ body, documentElement: body });
+
+      const result = await extractPageSnapshot(page);
+
+      const node = result.tree[0];
+      expect(Object.keys(node.attributes)).toHaveLength(8);
+      expect(node.hiddenAttrCount).toBe(4);
+    });
+
+    it('orders priority attrs (role, aria-label, name, id) before the rest', async () => {
+      const attrs = { 'data-a': 'a', 'data-b': 'b', role: 'button', name: 'submit' };
+      const body = fakeEl('body', {}, [fakeEl('button', attrs)]);
+      const page = stubPage({ body, documentElement: body });
+
+      const result = await extractPageSnapshot(page);
+
+      const keys = Object.keys(result.tree[0].attributes);
+      expect(keys.indexOf('role')).toBeLessThan(keys.indexOf('data-a'));
+      expect(keys.indexOf('name')).toBeLessThan(keys.indexOf('data-b'));
+    });
+
+    it('truncates text to 120 characters', async () => {
+      const body = fakeEl('body', {}, [fakeEl('p', {}, [], 'a'.repeat(200))]);
+      const page = stubPage({ body, documentElement: body });
+
+      const result = await extractPageSnapshot(page);
+
+      expect(result.tree[0].text).toHaveLength(120);
+    });
+
+    it('normalises internal whitespace in text', async () => {
+      const body = fakeEl('body', {}, [fakeEl('p', {}, [], '  hello   world  ')]);
+      const page = stubPage({ body, documentElement: body });
+
+      const result = await extractPageSnapshot(page);
+
+      expect(result.tree[0].text).toBe('hello world');
+    });
+
+    it('falls back to textContent when innerText is undefined', async () => {
+      const el = { ...fakeEl('p', {}, [], ''), innerText: undefined, textContent: 'fallback' };
+      const body = fakeEl('body', {}, [el]);
+      const page = stubPage({ body, documentElement: body });
+
+      const result = await extractPageSnapshot(page);
+
+      expect(result.tree[0].text).toBe('fallback');
+    });
+
+    it('scopes tree to the element matched by selector', async () => {
+      const target = fakeEl('section', { id: 'content' }, [fakeEl('p', {}, [], 'hello')]);
+      const page = stubPage({
+        body: fakeEl('body', {}, [fakeEl('div'), target]),
+        documentElement: fakeEl('body'),
+        querySelector: vi.fn((sel: string) => (sel === '#content' ? target : null)),
+      });
+
+      const result = await extractPageSnapshot(page, { selector: '#content' });
+
+      expect(result.tree).toHaveLength(1);
+      expect(result.tree[0].tag).toBe('section');
+      expect(result.tree[0].children[0].tag).toBe('p');
+    });
+
+    it('returns empty tree when selector matches nothing', async () => {
+      const page = stubPage({
+        body: fakeEl('body', {}, [fakeEl('div')]),
+        documentElement: fakeEl('body'),
+        querySelector: vi.fn(() => null),
+      });
+
+      const result = await extractPageSnapshot(page, { selector: '.nonexistent' });
+
+      expect(result.tree).toHaveLength(0);
+    });
   });
 
   it('delegates locator generation to locator.evaluate', async () => {
     const evaluate = vi.fn(async () => ['#login', '[name="email"]']);
     const page = {
       locator: vi.fn(() => ({
-        first: vi.fn(() => ({
-          evaluate,
-        })),
+        evaluate,
       })),
     } as unknown as Page;
 

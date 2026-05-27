@@ -3,27 +3,30 @@ import type { Page } from 'playwright-core';
 interface PageSnapshotNode {
   tag: string;
   text: string;
-  role: string | null;
-  name: string | null;
+  attributes: Record<string, string>;
   children: PageSnapshotNode[];
+  hiddenChildCount?: number;  // children omitted due to maxChildren or maxDepth limits
+  hiddenAttrCount?: number;   // attributes omitted due to MAX_ATTRS limit
 }
 
 export interface PageSnapshotResult {
   title: string;
   url: string;
   tree: PageSnapshotNode[];
+  params: { maxDepth: number; maxChildren: number; selector: string | null };
 }
 
+// node.text is already truncated to 120 chars by buildNode in extractPageSnapshot
 const formatNode = (node: PageSnapshotNode, depth: number): string => {
   const indent = '  '.repeat(depth);
   const parts = [node.tag];
 
-  if (node.role !== null) {
-    parts.push(`role=${node.role}`);
+  for (const [k, v] of Object.entries(node.attributes)) {
+    parts.push(`${k}="${v}"`);
   }
 
-  if (node.name !== null) {
-    parts.push(`name="${node.name}"`);
+  if (node.hiddenAttrCount) {
+    parts.push(`[…${node.hiddenAttrCount} more attrs]`);
   }
 
   if (node.text.length > 0) {
@@ -33,46 +36,85 @@ const formatNode = (node: PageSnapshotNode, depth: number): string => {
   const currentLine = `${indent}- ${parts.join(' | ')}`;
   const childLines = node.children.map((child) => formatNode(child, depth + 1));
 
+  if (node.hiddenChildCount) {
+    childLines.push(`${indent}  - […${node.hiddenChildCount} more children]`);
+  }
+
   return [currentLine, ...childLines].join('\n');
 };
 
-export const extractPageSnapshot = async (page: Page): Promise<PageSnapshotResult> =>
-  page.evaluate(() => {
-    const collectChildren = (element: Element, depth: number): PageSnapshotNode[] => {
-      if (depth > 2) {
-        return [];
+const DEFAULT_MAX_DEPTH = 4;
+const DEFAULT_MAX_CHILDREN = 20;
+
+export const extractPageSnapshot = async (
+  page: Page,
+  options?: { maxDepth?: number; maxChildren?: number; selector?: string },
+): Promise<PageSnapshotResult> => {
+  const maxDepth = options?.maxDepth ?? DEFAULT_MAX_DEPTH;
+  const maxChildren = options?.maxChildren ?? DEFAULT_MAX_CHILDREN;
+  const selector = options?.selector ?? null;
+
+  const tree = await page.evaluate(
+    ({ maxDepth, maxChildren, selector }) => {
+      const SKIP_TAGS = new Set(['script', 'style', 'noscript', 'link', 'meta', 'head']);
+      const MAX_ATTRS = 8;
+      const MAX_ATTR_VALUE_LEN = 80;
+      const PRIORITY_ATTRS = new Set(['role', 'aria-label', 'name', 'id']);
+
+      const buildNode = (element: Element, depth: number): PageSnapshotNode => {
+        const visible = Array.from(element.children).filter(
+          (c) => !SKIP_TAGS.has(c.tagName.toLowerCase()),
+        );
+        const atDepthLimit = depth >= maxDepth;
+        const shown = atDepthLimit ? [] : visible.slice(0, maxChildren);
+        const hiddenChildCount = visible.length - shown.length;
+
+        // `innerText` is only defined on HTMLElement — SVG/MathML elements
+        // and some custom elements return undefined here, so fall back to
+        // `textContent` (available on every Node) before failing to ''.
+        const rawText = (element as HTMLElement).innerText ?? element.textContent ?? '';
+        const allAttrs = Array.from(element.attributes).map(
+          (a): [string, string] => [a.name, a.value.slice(0, MAX_ATTR_VALUE_LEN)],
+        );
+        const prioritized = allAttrs.filter(([k]) => PRIORITY_ATTRS.has(k));
+        const rest = allAttrs.filter(([k]) => !PRIORITY_ATTRS.has(k));
+        const ordered = [...prioritized, ...rest];
+        const shownAttrs = ordered.slice(0, MAX_ATTRS);
+        const hiddenAttrCount = ordered.length - shownAttrs.length;
+        const attributes: Record<string, string> = Object.fromEntries(shownAttrs);
+
+        return {
+          tag: element.tagName.toLowerCase(),
+          text: rawText.trim().replace(/\s+/g, ' ').slice(0, 120),
+          attributes,
+          children: shown.map((child) => buildNode(child, depth + 1)),
+          ...(hiddenChildCount > 0 ? { hiddenChildCount } : {}),
+          ...(hiddenAttrCount > 0 ? { hiddenAttrCount } : {}),
+        };
+      };
+
+      if (selector !== null) {
+        const root = document.querySelector(selector);
+        if (root === null) return [];
+        return [buildNode(root, 0)];
       }
 
-      return Array.from(element.children)
-        .slice(0, 8)
-        .map((child) => {
-          // `innerText` is only defined on HTMLElement — SVG/MathML elements
-          // and some custom elements return undefined here, so fall back to
-          // `textContent` (available on every Node) before failing to '' .
-          const rawText =
-            (child as HTMLElement).innerText ?? child.textContent ?? '';
+      const body = document.body ?? document.documentElement;
+      const topLevel = Array.from(body.children).filter(
+        (c) => !SKIP_TAGS.has(c.tagName.toLowerCase()),
+      );
+      return topLevel.slice(0, maxChildren).map((child) => buildNode(child, 0));
+    },
+    { maxDepth, maxChildren, selector },
+  );
 
-          return {
-            tag: child.tagName.toLowerCase(),
-            text: rawText.trim().replace(/\s+/g, ' ').slice(0, 120),
-            role: child.getAttribute('role'),
-            name:
-              child.getAttribute('aria-label') ??
-              child.getAttribute('name') ??
-              child.getAttribute('id'),
-            children: collectChildren(child, depth + 1),
-          };
-        });
-    };
-
-    const body = document.body ?? document.documentElement;
-
-    return {
-      title: document.title,
-      url: window.location.href,
-      tree: collectChildren(body, 0),
-    };
-  });
+  return {
+    title: await page.title(),
+    url: page.url(),
+    tree,
+    params: { maxDepth, maxChildren, selector },
+  };
+};
 
 export const formatPageStructure = (snapshot: PageSnapshotResult): string => {
   const body = snapshot.tree.map((node) => formatNode(node, 0)).join('\n');
@@ -84,7 +126,7 @@ export const generateLocatorCandidates = async (
   page: Page,
   selector: string,
 ): Promise<string[]> =>
-  page.locator(selector).first().evaluate((element) => {
+  page.locator(selector).evaluate((element) => {
     const candidates = new Set<string>();
     const id = element.getAttribute('id');
     const name = element.getAttribute('name');

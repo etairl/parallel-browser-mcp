@@ -1,6 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SessionRegistry } from '../../sessions/SessionRegistry.js';
 import {
+  domQuerySchema,
   dragSchema,
   evaluateSchema,
   fillFormSchema,
@@ -15,6 +16,7 @@ import {
   selectOptionSchema,
   selectorSchema,
   sessionIdSchema,
+  snapshotSchema,
   uploadFileSchema,
   waitForSelectorSchema,
   waitForTimeoutSchema,
@@ -127,10 +129,10 @@ export const registerBrowserTools = (server: McpServer, registry: SessionRegistr
     {
       title: 'Browser Snapshot',
       description: 'Return a structured page snapshot.',
-      inputSchema: sessionIdSchema,
+      inputSchema: snapshotSchema,
     },
-    withSession(registry, async ({ page }) => {
-      const snapshot = await extractPageSnapshot(page);
+    withSession(registry, async ({ page }, { maxDepth, maxChildren, selector }) => {
+      const snapshot = await extractPageSnapshot(page, { maxDepth, maxChildren, selector });
 
       return jsonResult(snapshot);
     }),
@@ -210,12 +212,48 @@ export const registerBrowserTools = (server: McpServer, registry: SessionRegistr
     {
       title: 'Browser Get Page Structure',
       description: 'Return a readable page structure summary.',
-      inputSchema: sessionIdSchema,
+      inputSchema: snapshotSchema,
     },
-    withSession(registry, async ({ page }) => {
-      const snapshot = await extractPageSnapshot(page);
+    withSession(registry, async ({ page }, { maxDepth, maxChildren, selector }) => {
+      const snapshot = await extractPageSnapshot(page, { maxDepth, maxChildren, selector });
 
       return textResult(formatPageStructure(snapshot));
+    }),
+  );
+
+  server.registerTool(
+    'browser_dom_query',
+    {
+      title: 'Browser DOM Query',
+      description: 'Query element presence, count, and state without waiting.',
+      inputSchema: domQuerySchema,
+    },
+    withSession(registry, async ({ page }, { selector }) => {
+      const locator = page.locator(selector);
+      const count = await locator.count();
+
+      if (count === 0) {
+        return jsonResult({ selector, count });
+      }
+
+      const first = locator.first();
+      const [visible, enabled] = await Promise.all([first.isVisible(), first.isEnabled()]);
+
+      let checked: boolean | null = null;
+      try {
+        checked = await first.isChecked();
+      } catch {
+        // not a checkbox or radio
+      }
+
+      let value: string | null = null;
+      try {
+        value = await first.inputValue();
+      } catch {
+        // not an input element
+      }
+
+      return jsonResult({ selector, count, visible, enabled, checked, value });
     }),
   );
 

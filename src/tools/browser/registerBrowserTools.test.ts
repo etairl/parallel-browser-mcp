@@ -14,6 +14,11 @@ class FakeServer {
 const createSession = (): SessionRecord => {
   const locator = {
     first: vi.fn(() => locator),
+    count: vi.fn(async () => 1),
+    isVisible: vi.fn(async () => true),
+    isEnabled: vi.fn(async () => true),
+    isChecked: vi.fn(async () => false),
+    inputValue: vi.fn(async () => 'test-value'),
     click: vi.fn(async () => undefined),
     fill: vi.fn(async () => undefined),
     hover: vi.fn(async () => undefined),
@@ -30,7 +35,11 @@ const createSession = (): SessionRecord => {
     locator: vi.fn(() => locator),
     waitForSelector: vi.fn(async () => undefined),
     waitForTimeout: vi.fn(async () => undefined),
-    evaluate: vi.fn(async (_callback: unknown, script: string) => `page:${script}`),
+    evaluate: vi.fn(async (_callback: unknown, arg: unknown) => {
+      // extractPageSnapshot passes { maxDepth, maxChildren, selector }; browser_evaluate passes a string
+      if (typeof arg === 'string') return `page:${arg}`;
+      return [];
+    }),
     keyboard: {
       press: vi.fn(async () => undefined),
       type: vi.fn(async () => undefined),
@@ -171,5 +180,99 @@ describe('registerBrowserTools', () => {
       delay: 10,
     });
     expect(session.page.mouse.up).toHaveBeenCalled();
+  });
+
+  it('browser_snapshot returns a JSON snapshot with params', async () => {
+    const fakeServer = new FakeServer();
+    const session = createSession();
+    const registry = { getSessionOrThrow: vi.fn(() => session) };
+
+    registerBrowserTools(fakeServer as unknown as McpServer, registry as never);
+
+    const snapshot = fakeServer.tools.get('browser_snapshot');
+    const result = (await snapshot?.({
+      sessionId: 1,
+      maxDepth: 3,
+      maxChildren: 10,
+    })) as { content: Array<{ text?: string }> };
+
+    const parsed = JSON.parse(result.content[0]?.text ?? '{}');
+    expect(parsed.title).toBe('Example');
+    expect(parsed.url).toBe('https://example.com');
+    expect(parsed.params).toMatchObject({ maxDepth: 3, maxChildren: 10, selector: null });
+  });
+
+  it('browser_dom_query returns element state when element exists', async () => {
+    const fakeServer = new FakeServer();
+    const session = createSession();
+    const registry = { getSessionOrThrow: vi.fn(() => session) };
+
+    registerBrowserTools(fakeServer as unknown as McpServer, registry as never);
+
+    const domQuery = fakeServer.tools.get('browser_dom_query');
+    const result = (await domQuery?.({
+      sessionId: 1,
+      selector: '#submit',
+    })) as { content: Array<{ text?: string }> };
+
+    const parsed = JSON.parse(result.content[0]?.text ?? '{}');
+    expect(parsed.selector).toBe('#submit');
+    expect(parsed.count).toBe(1);
+    expect(parsed.visible).toBe(true);
+    expect(parsed.enabled).toBe(true);
+  });
+
+  it('browser_dom_query returns only count when element is absent', async () => {
+    const fakeServer = new FakeServer();
+    const session = createSession();
+    // override count to return 0
+    (session.page.locator as ReturnType<typeof vi.fn>).mockReturnValue({
+      count: vi.fn(async () => 0),
+      first: vi.fn(),
+    });
+    const registry = { getSessionOrThrow: vi.fn(() => session) };
+
+    registerBrowserTools(fakeServer as unknown as McpServer, registry as never);
+
+    const domQuery = fakeServer.tools.get('browser_dom_query');
+    const result = (await domQuery?.({
+      sessionId: 1,
+      selector: '.missing',
+    })) as { content: Array<{ text?: string }> };
+
+    const parsed = JSON.parse(result.content[0]?.text ?? '{}');
+    expect(parsed.selector).toBe('.missing');
+    expect(parsed.count).toBe(0);
+    expect(parsed.visible).toBeUndefined();
+  });
+
+  it('browser_dom_query sets checked and value to null for non-checkbox non-input elements', async () => {
+    const fakeServer = new FakeServer();
+    const session = createSession();
+    // isChecked and inputValue throw for non-checkbox / non-input elements
+    const firstLocator = {
+      isVisible: vi.fn(async () => true),
+      isEnabled: vi.fn(async () => true),
+      isChecked: vi.fn(async () => { throw new Error('not a checkbox'); }),
+      inputValue: vi.fn(async () => { throw new Error('not an input'); }),
+    };
+    (session.page.locator as ReturnType<typeof vi.fn>).mockReturnValue({
+      count: vi.fn(async () => 1),
+      first: vi.fn(() => firstLocator),
+    });
+    const registry = { getSessionOrThrow: vi.fn(() => session) };
+
+    registerBrowserTools(fakeServer as unknown as McpServer, registry as never);
+
+    const domQuery = fakeServer.tools.get('browser_dom_query');
+    const result = (await domQuery?.({
+      sessionId: 1,
+      selector: 'span',
+    })) as { content: Array<{ text?: string }> };
+
+    const parsed = JSON.parse(result.content[0]?.text ?? '{}');
+    expect(parsed.count).toBe(1);
+    expect(parsed.checked).toBeNull();
+    expect(parsed.value).toBeNull();
   });
 });
