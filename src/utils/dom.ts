@@ -13,6 +13,7 @@ export interface PageSnapshotResult {
   title: string;
   url: string;
   tree: PageSnapshotNode[];
+  hiddenTopLevelCount?: number;
   params: { maxDepth: number; maxChildren: number; selector: string | null };
 }
 
@@ -54,7 +55,9 @@ export const extractPageSnapshot = async (
   const maxChildren = options?.maxChildren ?? DEFAULT_MAX_CHILDREN;
   const selector = options?.selector ?? null;
 
-  const tree = await page.evaluate(
+  // Read title inside evaluate so it and the tree are captured in the same CDP call —
+  // a concurrent page.title() could race a client-side navigation and describe a different page.
+  const { tree, hiddenTopLevelCount, title } = await page.evaluate(
     ({ maxDepth, maxChildren, selector }) => {
       const SKIP_TAGS = new Set(['script', 'style', 'noscript', 'link', 'meta', 'head']);
       const MAX_ATTRS = 8;
@@ -95,38 +98,52 @@ export const extractPageSnapshot = async (
 
       if (selector !== null) {
         const root = document.querySelector(selector);
-        if (root === null) return [];
-        return [buildNode(root, 0)];
+        if (root === null) return { tree: [], hiddenTopLevelCount: 0, title: document.title };
+        return { tree: [buildNode(root, 0)], hiddenTopLevelCount: 0, title: document.title };
       }
 
       const body = document.body ?? document.documentElement;
       const topLevel = Array.from(body.children).filter(
         (c) => !SKIP_TAGS.has(c.tagName.toLowerCase()),
       );
-      return topLevel.slice(0, maxChildren).map((child) => buildNode(child, 0));
+      const shown = topLevel.slice(0, maxChildren);
+      return {
+        tree: shown.map((child) => buildNode(child, 0)),
+        hiddenTopLevelCount: topLevel.length - shown.length,
+        title: document.title,
+      };
     },
     { maxDepth, maxChildren, selector },
   );
 
   return {
-    title: await page.title(),
+    title,
     url: page.url(),
     tree,
+    // Omit when 0 — the selector path always returns 0 (no top-level siblings to hide).
+    ...(hiddenTopLevelCount > 0 ? { hiddenTopLevelCount } : {}),
     params: { maxDepth, maxChildren, selector },
   };
 };
 
 export const formatPageStructure = (snapshot: PageSnapshotResult): string => {
-  const body = snapshot.tree.map((node) => formatNode(node, 0)).join('\n');
-
-  return [`Title: ${snapshot.title}`, `URL: ${snapshot.url}`, '', body].join('\n');
+  const lines = [`Title: ${snapshot.title}`, `URL: ${snapshot.url}`, ''];
+  lines.push(...snapshot.tree.map((node) => formatNode(node, 0)));
+  if (snapshot.hiddenTopLevelCount) {
+    lines.push(`[…${snapshot.hiddenTopLevelCount} more top-level elements]`);
+  }
+  return lines.join('\n');
 };
 
 export const generateLocatorCandidates = async (
   page: Page,
   selector: string,
-): Promise<string[]> =>
-  page.locator(selector).evaluate((element) => {
+): Promise<string[]> => {
+  const locator = page.locator(selector);
+  // .first().evaluate() throws when the locator matches nothing — guard explicitly so
+  // callers get an empty array rather than an unhandled strict-mode error.
+  if (await locator.count() === 0) return [];
+  return locator.first().evaluate((element) => {
     const candidates = new Set<string>();
     const id = element.getAttribute('id');
     const name = element.getAttribute('name');
@@ -156,3 +173,4 @@ export const generateLocatorCandidates = async (
 
     return [...candidates];
   });
+};

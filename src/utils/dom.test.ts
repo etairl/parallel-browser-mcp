@@ -50,8 +50,7 @@ describe('dom utils', () => {
 
   it('delegates snapshot extraction to page.evaluate', async () => {
     const page = {
-      evaluate: vi.fn(async () => []),
-      title: vi.fn(async () => 'Snapshot'),
+      evaluate: vi.fn(async () => ({ tree: [], hiddenTopLevelCount: 0, title: 'Snapshot' })),
       url: vi.fn(() => 'https://example.com'),
     } as unknown as Page;
 
@@ -65,8 +64,7 @@ describe('dom utils', () => {
 
   it('passes options to page.evaluate and records them in params', async () => {
     const page = {
-      evaluate: vi.fn(async () => []),
-      title: vi.fn(async () => 'Options Test'),
+      evaluate: vi.fn(async () => ({ tree: [], hiddenTopLevelCount: 0, title: 'Options Test' })),
       url: vi.fn(() => 'https://example.com'),
     } as unknown as Page;
 
@@ -97,6 +95,18 @@ describe('dom utils', () => {
     });
 
     expect(output).toContain('[…5 more attrs]');
+  });
+
+  it('renders hiddenTopLevelCount in formatted output', () => {
+    const output = formatPageStructure({
+      title: 'T',
+      url: 'https://example.com',
+      tree: [{ tag: 'div', text: '', attributes: {}, children: [] }],
+      hiddenTopLevelCount: 8,
+      params: { maxDepth: 4, maxChildren: 20, selector: null },
+    });
+
+    expect(output).toContain('[…8 more top-level elements]');
   });
 
   it('renders hiddenChildCount in formatted output', () => {
@@ -140,13 +150,14 @@ describe('dom utils', () => {
       expect(tags).toEqual(['div', 'p']);
     });
 
-    it('caps top-level nodes at maxChildren', async () => {
+    it('caps top-level nodes at maxChildren and reports hiddenTopLevelCount', async () => {
       const body = fakeEl('body', {}, Array.from({ length: 25 }, () => fakeEl('div')));
       const page = stubPage({ body, documentElement: body });
 
       const result = await extractPageSnapshot(page, { maxChildren: 5 });
 
       expect(result.tree).toHaveLength(5);
+      expect(result.hiddenTopLevelCount).toBe(20);
     });
 
     it('stops recursing at maxDepth and sets hiddenChildCount', async () => {
@@ -264,12 +275,26 @@ describe('dom utils', () => {
     const evaluate = vi.fn(async () => ['#login', '[name="email"]']);
     const page = {
       locator: vi.fn(() => ({
-        evaluate,
+        count: vi.fn(async () => 1),
+        first: vi.fn(() => ({ evaluate })),
       })),
     } as unknown as Page;
 
     const result = await generateLocatorCandidates(page, '#email');
 
     expect(result).toEqual(['#login', '[name="email"]']);
+  });
+
+  it('returns empty array from generateLocatorCandidates when selector matches nothing', async () => {
+    const page = {
+      locator: vi.fn(() => ({
+        count: vi.fn(async () => 0),
+        first: vi.fn(),
+      })),
+    } as unknown as Page;
+
+    const result = await generateLocatorCandidates(page, '.nonexistent');
+
+    expect(result).toEqual([]);
   });
 });
