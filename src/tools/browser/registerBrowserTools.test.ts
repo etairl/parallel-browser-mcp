@@ -38,7 +38,7 @@ const createSession = (): SessionRecord => {
     evaluate: vi.fn(async (_callback: unknown, arg: unknown) => {
       // extractPageSnapshot passes { maxDepth, maxChildren, selector }; browser_evaluate passes a string
       if (typeof arg === 'string') return `page:${arg}`;
-      return { tree: [], hiddenTopLevelCount: 0, title: 'Example' };
+      return { tree: [], hiddenTopLevelCount: 0, title: 'Example', url: 'https://example.com' };
     }),
     keyboard: {
       press: vi.fn(async () => undefined),

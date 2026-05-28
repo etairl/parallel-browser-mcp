@@ -5,7 +5,9 @@ interface PageSnapshotNode {
   text: string;
   attributes: Record<string, string>;
   children: PageSnapshotNode[];
-  hiddenChildCount?: number;  // children omitted due to maxChildren or maxDepth limits
+  hiddenByDepth?: number;     // children omitted because maxDepth was reached
+  hiddenByCount?: number;     // children omitted because maxChildren was reached
+  hiddenByNodeCap?: number;   // children omitted because the 500-node global cap was reached
   hiddenAttrCount?: number;   // attributes omitted due to MAX_ATTRS limit
 }
 
@@ -37,8 +39,14 @@ const formatNode = (node: PageSnapshotNode, depth: number): string => {
   const currentLine = `${indent}- ${parts.join(' | ')}`;
   const childLines = node.children.map((child) => formatNode(child, depth + 1));
 
-  if (node.hiddenChildCount) {
-    childLines.push(`${indent}  - […${node.hiddenChildCount} more children]`);
+  if (node.hiddenByDepth) {
+    childLines.push(`${indent}  - […${node.hiddenByDepth} more children — increase maxDepth to expand]`);
+  }
+  if (node.hiddenByCount) {
+    childLines.push(`${indent}  - […${node.hiddenByCount} more children — increase maxChildren to expand]`);
+  }
+  if (node.hiddenByNodeCap) {
+    childLines.push(`${indent}  - […${node.hiddenByNodeCap} more children — node cap reached]`);
   }
 
   return [currentLine, ...childLines].join('\n');
@@ -55,22 +63,51 @@ export const extractPageSnapshot = async (
   const maxChildren = options?.maxChildren ?? DEFAULT_MAX_CHILDREN;
   const selector = options?.selector ?? null;
 
-  // Read title inside evaluate so it and the tree are captured in the same CDP call —
-  // a concurrent page.title() could race a client-side navigation and describe a different page.
-  const { tree, hiddenTopLevelCount, title } = await page.evaluate(
+  // Capture title, url, and tree in the same CDP call so all three describe the same
+  // navigation state — calling page.title() or page.url() separately could race a
+  // client-side navigation and return values from different pages.
+  const { tree, hiddenTopLevelCount, title, url } = await page.evaluate(
     ({ maxDepth, maxChildren, selector }) => {
       const SKIP_TAGS = new Set(['script', 'style', 'noscript', 'link', 'meta', 'head']);
       const MAX_ATTRS = 8;
       const MAX_ATTR_VALUE_LEN = 80;
       const PRIORITY_ATTRS = new Set(['role', 'aria-label', 'name', 'id']);
 
+      const MAX_TOTAL_NODES = 500;
+      let nodesBuilt = 0;
+
       const buildNode = (element: Element, depth: number): PageSnapshotNode => {
+        nodesBuilt++;
+
         const visible = Array.from(element.children).filter(
           (c) => !SKIP_TAGS.has(c.tagName.toLowerCase()),
         );
         const atDepthLimit = depth >= maxDepth;
-        const shown = atDepthLimit ? [] : visible.slice(0, maxChildren);
-        const hiddenChildCount = visible.length - shown.length;
+
+        let shown: Element[];
+        let hiddenByDepth = 0;
+        let hiddenByCount = 0;
+        let hiddenByNodeCap = 0;
+
+        if (atDepthLimit) {
+          shown = [];
+          hiddenByDepth = visible.length;
+        } else {
+          const byCount = visible.slice(0, maxChildren);
+          hiddenByCount = visible.length - byCount.length;
+          // Budget check is conservative: it limits children of this node but not their
+          // descendants, so the actual total can moderately exceed MAX_TOTAL_NODES.
+          const budgetLeft = MAX_TOTAL_NODES - nodesBuilt;
+          if (budgetLeft <= 0) {
+            shown = [];
+            hiddenByNodeCap = byCount.length;
+          } else if (budgetLeft < byCount.length) {
+            shown = byCount.slice(0, budgetLeft);
+            hiddenByNodeCap = byCount.length - shown.length;
+          } else {
+            shown = byCount;
+          }
+        }
 
         // `innerText` is only defined on HTMLElement — SVG/MathML elements
         // and some custom elements return undefined here, so fall back to
@@ -91,15 +128,17 @@ export const extractPageSnapshot = async (
           text: rawText.trim().replace(/\s+/g, ' ').slice(0, 120),
           attributes,
           children: shown.map((child) => buildNode(child, depth + 1)),
-          ...(hiddenChildCount > 0 ? { hiddenChildCount } : {}),
+          ...(hiddenByDepth > 0 ? { hiddenByDepth } : {}),
+          ...(hiddenByCount > 0 ? { hiddenByCount } : {}),
+          ...(hiddenByNodeCap > 0 ? { hiddenByNodeCap } : {}),
           ...(hiddenAttrCount > 0 ? { hiddenAttrCount } : {}),
         };
       };
 
       if (selector !== null) {
         const root = document.querySelector(selector);
-        if (root === null) return { tree: [], hiddenTopLevelCount: 0, title: document.title };
-        return { tree: [buildNode(root, 0)], hiddenTopLevelCount: 0, title: document.title };
+        if (root === null) return { tree: [], hiddenTopLevelCount: 0, title: document.title, url: window.location.href };
+        return { tree: [buildNode(root, 0)], hiddenTopLevelCount: 0, title: document.title, url: window.location.href };
       }
 
       const body = document.body ?? document.documentElement;
@@ -111,6 +150,7 @@ export const extractPageSnapshot = async (
         tree: shown.map((child) => buildNode(child, 0)),
         hiddenTopLevelCount: topLevel.length - shown.length,
         title: document.title,
+        url: window.location.href,
       };
     },
     { maxDepth, maxChildren, selector },
@@ -118,7 +158,7 @@ export const extractPageSnapshot = async (
 
   return {
     title,
-    url: page.url(),
+    url,
     tree,
     // Omit when 0 — the selector path always returns 0 (no top-level siblings to hide).
     ...(hiddenTopLevelCount > 0 ? { hiddenTopLevelCount } : {}),
