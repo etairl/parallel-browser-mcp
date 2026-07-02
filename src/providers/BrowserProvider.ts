@@ -1,10 +1,11 @@
 import type { AuthSessionSummary, StartedBrowserSession } from '../types/session.js';
-import type { ProviderName } from '../types/providerConfig.js';
+import type { ProviderName, SessionProxyConfig } from '../types/providerConfig.js';
 
 export interface ProviderStartSessionParams {
   sessionName: string | null;
   authSessionName?: string | null;
   resume?: boolean;
+  proxy?: SessionProxyConfig | null;
 }
 
 export abstract class BrowserProvider {

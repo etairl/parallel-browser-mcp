@@ -6,6 +6,17 @@ export type ProviderName = (typeof providerNames)[number];
 
 const recordSchema = z.record(z.unknown());
 
+export const sessionProxyConfigSchema = z
+  .object({
+    server: z.string().min(1),
+    bypass: z.string().min(1).optional(),
+    username: z.string().min(1).optional(),
+    password: z.string().min(1).optional(),
+  })
+  .strict();
+
+export type SessionProxyConfig = z.infer<typeof sessionProxyConfigSchema>;
+
 export const browserbaseProviderConfigSchema = z
   .object({
     projectId: z.string().min(1).nullable().optional(),

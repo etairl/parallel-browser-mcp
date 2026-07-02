@@ -1,11 +1,12 @@
 import { z } from 'zod';
-import { providerNameSchema } from './providerConfig.js';
+import { providerNameSchema, sessionProxyConfigSchema } from './providerConfig.js';
 
 export const startSessionSchema = z.object({
   provider: providerNameSchema.optional(),
   sessionName: z.string().min(1).max(100).optional(),
   authSessionName: z.string().min(1).max(100).optional(),
   resume: z.boolean().optional(),
+  proxy: sessionProxyConfigSchema.optional().describe('Per-session proxy settings. Currently supported by the playwright provider.'),
 });
 
 export const closeSessionSchema = z.object({

@@ -30,10 +30,17 @@ export class SessionRegistry {
       throw new SessionRegistryError(`Unsupported provider "${providerName}".`);
     }
 
+    if (input.proxy !== undefined && providerName !== 'playwright') {
+      throw new SessionRegistryError(
+        `Per-session proxy settings are currently supported only by the playwright provider, not "${providerName}".`,
+      );
+    }
+
     const startedSession = await provider.startSession({
       sessionName: input.sessionName ?? null,
       authSessionName: input.authSessionName ?? null,
       resume: input.resume ?? true,
+      proxy: input.proxy ?? null,
     });
     const now = new Date().toISOString();
     const id = this.nextSessionId;

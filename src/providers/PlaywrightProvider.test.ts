@@ -98,6 +98,40 @@ describe('PlaywrightProvider', () => {
     expect(session.metadata).toMatchObject({ isLocal: true, stealth: true });
   });
 
+  it('applies per-session proxy settings to the browser context', async () => {
+    const provider = new PlaywrightProvider(createConfig({
+      launchOptions: { headless: true },
+      contextOptions: { viewport: { width: 1200, height: 800 } },
+    }));
+
+    const session = await provider.startSession({
+      sessionName: null,
+      proxy: {
+        server: 'socks5://127.0.0.1:10081',
+        bypass: 'localhost,127.0.0.1,::1',
+      },
+    });
+
+    expect(mocks.launch).toHaveBeenCalledWith({
+      headless: true,
+    });
+    expect(mocks.newContext).toHaveBeenCalledWith({
+      viewport: { width: 1200, height: 800 },
+      proxy: {
+        server: 'socks5://127.0.0.1:10081',
+        bypass: 'localhost,127.0.0.1,::1',
+      },
+    });
+    expect(session.resolvedProviderConfig).toMatchObject({
+      contextOptions: {
+        proxy: {
+          server: 'socks5://127.0.0.1:10081',
+          bypass: 'localhost,127.0.0.1,::1',
+        },
+      },
+    });
+  });
+
   it('loads a saved auth session storage state when present', async () => {
     const rootDir = await mkdtemp(join(tmpdir(), 'parallel-browser-auth-'));
     const authDir = join(rootDir, 'website-1');

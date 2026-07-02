@@ -110,10 +110,60 @@ describe('SessionRegistry', () => {
       sessionName: null,
       authSessionName: 'mbna',
       resume: true,
+      proxy: null,
     });
     expect(provider.saveAuthSessionMock).toHaveBeenCalledTimes(1);
     expect(authSession.name).toBe('mbna');
     expect(registry.getSessions()[0]?.authSessionName).toBe('mbna');
+  });
+
+  it('passes per-session proxy input through to the playwright provider', async () => {
+    const provider = new TestProvider();
+    const registry = new SessionRegistry(new Map([['playwright', provider]]), 'playwright');
+
+    await registry.startSession({
+      proxy: {
+        server: 'socks5://127.0.0.1:10081',
+        bypass: 'localhost,127.0.0.1,::1',
+      },
+    });
+
+    expect(provider.startSessionMock).toHaveBeenCalledWith({
+      sessionName: null,
+      authSessionName: null,
+      resume: true,
+      proxy: {
+        server: 'socks5://127.0.0.1:10081',
+        bypass: 'localhost,127.0.0.1,::1',
+      },
+    });
+  });
+
+  it('rejects per-session proxy input for non-playwright providers', async () => {
+    class BrowserbaseTestProvider extends BrowserProvider {
+      constructor() {
+        super('browserbase');
+      }
+
+      async startSession(_params: ProviderStartSessionParams): Promise<StartedBrowserSession> {
+        return createStartedSession();
+      }
+
+      async closeSession(_session: StartedBrowserSession): Promise<void> {
+        return undefined;
+      }
+    }
+
+    const provider = new BrowserbaseTestProvider();
+    const registry = new SessionRegistry(new Map([['browserbase', provider]]), 'browserbase');
+
+    await expect(
+      registry.startSession({
+        proxy: {
+          server: 'socks5://127.0.0.1:10081',
+        },
+      }),
+    ).rejects.toThrow('Per-session proxy settings are currently supported only by the playwright provider');
   });
 
   it('saves bound auth sessions before shutdown close when configured', async () => {

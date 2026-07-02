@@ -1,6 +1,7 @@
 import type { Browser, BrowserContext, Page } from 'playwright-core';
 import type {
   ProviderName,
+  SessionProxyConfig,
 } from './providerConfig.js';
 import type {
   ResolvedAnchorProviderConfig,
@@ -14,6 +15,7 @@ export interface StartSessionInput {
   sessionName?: string;
   authSessionName?: string;
   resume?: boolean;
+  proxy?: SessionProxyConfig;
 }
 
 export interface StartedBrowserSession {

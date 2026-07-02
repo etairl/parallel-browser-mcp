@@ -63,6 +63,11 @@ export class PlaywrightProvider extends BrowserProvider {
     const contextOptions: BrowserContextOptions = {
       ...(this.config.contextOptions as BrowserContextOptions),
     };
+
+    if (params.proxy !== undefined && params.proxy !== null) {
+      contextOptions.proxy = params.proxy;
+    }
+
     const authSessionName = params.authSessionName ?? null;
     const authSession =
       authSessionName !== null ? this.resolveAuthSession(authSessionName) : null;
@@ -95,7 +100,10 @@ export class PlaywrightProvider extends BrowserProvider {
         authSessionName,
         persistentAuth: authSession !== null,
       },
-      resolvedProviderConfig: this.config,
+      resolvedProviderConfig: {
+        ...this.config,
+        contextOptions: contextOptions as Record<string, unknown>,
+      },
     };
   }
 
