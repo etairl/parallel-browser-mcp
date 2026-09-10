@@ -1,6 +1,7 @@
 {
   "name": "parallel-browser-mcp",
   "version": "0.1.14",
+  "license": "Apache-2.0",
   "mcpName": "io.github.etairl/parallel-browser-mcp",
   "private": false,
   "type": "module",
